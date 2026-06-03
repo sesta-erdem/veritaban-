@@ -28,7 +28,7 @@ class AdminCode
 
     public function login(string $email, string $password): array
     {
-        $user = $this->callProcedureOne('CALL sesta_admin_giris_kullanici_getir(?)', [$email]);
+        $user = $this->dal->getAdminLoginUserByEmail($email);
 
         if (!$user) {
             $this->slowFailedLoginResponse();
@@ -99,19 +99,17 @@ class AdminCode
 
     public function getAdminUsers(): array
     {
-        return $this->callProcedureAll('CALL sesta_admin_kullanicilar_hepsi()');
+        return $this->dal->getAdminUsers();
     }
 
     public function getAdminUser(int $id): ?array
     {
-        return $this->callProcedureOne('CALL sesta_admin_kullanici_getir(?)', [$id]);
+        return $this->dal->getAdminUserById($id);
     }
 
     public function adminEmailExists(string $email, ?int $ignoreId = null): bool
     {
-        $result = $this->callProcedureOne('CALL sesta_admin_eposta_var_mi(?, ?)', [$email, $ignoreId]);
-
-        return (int) ($result['adet'] ?? 0) > 0;
+        return $this->dal->adminEmailExists($email, $ignoreId);
     }
 
     public function verifyAdminPassword(int $id, string $password): bool
@@ -125,7 +123,7 @@ class AdminCode
             return false;
         }
 
-        $loginUser = $this->callProcedureOne('CALL sesta_admin_giris_kullanici_getir(?)', [(string) ($user['eposta'] ?? '')]);
+        $loginUser = $this->dal->getAdminLoginUserByEmail((string) ($user['eposta'] ?? ''));
         if (!$loginUser || (int) ($loginUser['kullanici_id'] ?? 0) !== $id) {
             return false;
         }
@@ -143,35 +141,16 @@ class AdminCode
         $password = (string) $payload['password'];
 
         if ($id === null) {
-            $this->callProcedureAll('CALL sesta_admin_kullanici_ekle(?, ?, ?, ?, ?)', [
-                $name,
-                $email,
-                $this->hashPassword($password),
-                $role,
-                $sil,
-            ]);
+            $this->dal->createAdminUser($name, $email, $this->hashPassword($password), $role, $sil);
             return;
         }
 
         if ($password !== '') {
-            $this->callProcedureAll('CALL sesta_admin_kullanici_sifreli_guncelle(?, ?, ?, ?, ?, ?)', [
-                $id,
-                $name,
-                $email,
-                $this->hashPassword($password),
-                $role,
-                $sil,
-            ]);
+            $this->dal->updateAdminUserWithPassword($id, $name, $email, $this->hashPassword($password), $role, $sil);
             return;
         }
 
-        $this->callProcedureAll('CALL sesta_admin_kullanici_guncelle(?, ?, ?, ?, ?)', [
-            $id,
-            $name,
-            $email,
-            $role,
-            $sil,
-        ]);
+        $this->dal->updateAdminUser($id, $name, $email, $role, $sil);
     }
 
     private function passwordAlgorithm(): string|int
@@ -210,10 +189,7 @@ class AdminCode
 
     private function upgradePasswordHash(int $userId, string $password): void
     {
-        $this->callProcedureAll('CALL sesta_admin_kullanici_sifre_hash_guncelle(?, ?)', [
-            $userId,
-            $this->hashPassword($password),
-        ]);
+        $this->dal->updateAdminPasswordHash($userId, $this->hashPassword($password));
     }
 
     private function clearExpiredLockIfNeeded(array $user): array
@@ -229,7 +205,7 @@ class AdminCode
             return $user;
         }
 
-        $this->callProcedureAll('CALL sesta_admin_kullanici_kilit_temizle(?)', [(int) $user['kullanici_id']]);
+        $this->dal->clearAdminUserLock((int) $user['kullanici_id']);
 
         $user['failed_attempts'] = 0;
         $user['lock_until'] = null;
@@ -258,16 +234,12 @@ class AdminCode
             $lockUntil = (new DateTimeImmutable('+' . self::LOGIN_LOCK_MINUTES . ' minutes'))->format('Y-m-d H:i:s');
         }
 
-        $this->callProcedureAll('CALL sesta_admin_kullanici_basarisiz_giris(?, ?, ?)', [
-            $userId,
-            $newFailedAttempts,
-            $lockUntil,
-        ]);
+        $this->dal->saveAdminFailedLogin($userId, $newFailedAttempts, $lockUntil);
     }
 
     private function resetLoginFailures(int $userId): void
     {
-        $this->callProcedureAll('CALL sesta_admin_kullanici_giris_sifirla(?)', [$userId]);
+        $this->dal->resetAdminLoginFailures($userId);
     }
 
     private function slowFailedLoginResponse(): void
@@ -288,7 +260,7 @@ class AdminCode
     public function dashboardCounts(): array
     {
         try {
-            $counts = $this->callProcedureOne('CALL sesta_dashboard_sayilari()');
+            $counts = $this->dal->getDashboardCounts();
         } catch (Throwable $exception) {
             $counts = $this->fallbackDashboardCounts();
         }
@@ -434,30 +406,6 @@ class AdminCode
         return $items;
     }
 
-    private function callProcedureAll(string $sql, array $params = []): array
-    {
-        return $this->dal->all($this->extractProcedureName($sql), $params);
-    }
-
-    private function callProcedureOne(string $sql, array $params = []): ?array
-    {
-        return $this->dal->one($this->extractProcedureName($sql), $params);
-    }
-
-    private function callProcedurePage(string $sql, array $params, int $page, int $limit): array
-    {
-        return $this->dal->page($this->extractProcedureName($sql), $params, $page, $limit);
-    }
-
-    private function extractProcedureName(string $sql): string
-    {
-        if (preg_match('/^\s*CALL\s+([a-zA-Z0-9_]+)/i', $sql, $matches) !== 1) {
-            throw new InvalidArgumentException('Gecersiz procedure cagri ifadesi.');
-        }
-
-        return (string) $matches[1];
-    }
-
     private function safeResultCount(callable $resolver): int
     {
         try {
@@ -471,11 +419,11 @@ class AdminCode
 
     public function getAdminUsersPage(int $page = 1, int $limit = 25): array
     {
-        return $this->callProcedurePage('CALL sesta_admin_kullanicilar_sayfa(?, ?)', [$page, $limit], $page, $limit);
+        return $this->dal->getAdminUsersPage($page, $limit);
     }
     public function getSiteSettings(): array
     {
-        $settings = $this->callProcedureOne('CALL sesta_site_ayarlari_getir()');
+        $settings = $this->dal->getSiteSettings();
 
         return $settings ?: [
             'id' => null,
@@ -501,29 +449,27 @@ class AdminCode
 
         $data = AdminInputGuard::sanitizeSiteSettingsPayload($data);
         $values = array_map(fn ($field) => $data[$field] ?? null, $fields);
-        $this->callProcedureAll('CALL sesta_site_ayarlari_kaydet(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', $values);
+        $this->dal->saveSiteSettings($values);
     }
 
     public function getProjects(): array
     {
-        return $this->callProcedureAll('CALL sesta_projeler_hepsi()');
+        return $this->dal->getProjects();
     }
 
     public function getProjectsPage(int $page = 1, int $limit = 25): array
     {
-        return $this->callProcedurePage('CALL sesta_projeler_sayfa(?, ?)', [$page, $limit], $page, $limit);
+        return $this->dal->getProjectsPage($page, $limit);
     }
 
     public function getProject(int $id): ?array
     {
-        return $this->callProcedureOne('CALL sesta_proje_getir(?)', [$id]);
+        return $this->dal->getProjectById($id);
     }
 
     public function projectSlugExists(string $slug, ?int $ignoreId = null): bool
     {
-        $result = $this->callProcedureOne('CALL sesta_proje_slug_var_mi(?, ?)', [$slug, $ignoreId]);
-
-        return (int) ($result['adet'] ?? 0) > 0;
+        return $this->dal->projectSlugExists($slug, $ignoreId);
     }
 
     public function saveProject(array $data, ?int $id = null): void
@@ -540,49 +486,41 @@ class AdminCode
         $values = array_map(fn ($field) => $data[$field] ?? null, $fields);
 
         if ($id) {
-            $this->callProcedureAll(
-                'CALL sesta_proje_guncelle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                array_merge([$id], $values)
-            );
+            $this->dal->updateProject($id, $values);
             return;
         }
 
-        $this->callProcedureAll(
-            'CALL sesta_proje_ekle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            array_merge($values, [(int) ($this->currentUser()['id'] ?? 0)])
-        );
+        $this->dal->createProject($values, (int) ($this->currentUser()['id'] ?? 0));
     }
 
     public function deleteProject(int $id): void
     {
-        $this->callProcedureAll('CALL sesta_proje_sil(?)', [$id]);
+        $this->dal->deleteProject($id);
     }
 
     public function getServices(): array
     {
-        return $this->callProcedureAll('CALL sesta_hizmetler_hepsi()');
+        return $this->dal->getServices();
     }
 
     public function getServicesPage(int $page = 1, int $limit = 25): array
     {
-        return $this->callProcedurePage('CALL sesta_hizmetler_sayfa(?, ?)', [$page, $limit], $page, $limit);
+        return $this->dal->getServicesPage($page, $limit);
     }
 
     public function getService(int $id): ?array
     {
-        return $this->callProcedureOne('CALL sesta_hizmet_getir(?)', [$id]);
+        return $this->dal->getServiceById($id);
     }
 
     public function serviceSlugExists(string $slug, ?int $ignoreId = null): bool
     {
-        $result = $this->callProcedureOne('CALL sesta_hizmet_slug_var_mi(?, ?)', [$slug, $ignoreId]);
-
-        return (int) ($result['adet'] ?? 0) > 0;
+        return $this->dal->serviceSlugExists($slug, $ignoreId);
     }
 
     public function getServiceDeliverables(int $serviceId): array
     {
-        return $this->callProcedureAll('CALL sesta_hizmet_teslimleri_getir(?)', [$serviceId]);
+        return $this->dal->getServiceDeliverables($serviceId);
     }
 
     public function saveService(array $data, array $deliverables = [], ?int $id = null): int
@@ -599,17 +537,10 @@ class AdminCode
         $values = array_map(fn ($field) => $data[$field] ?? null, $fields);
 
         if ($id) {
-            $this->callProcedureAll(
-                'CALL sesta_hizmet_guncelle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                array_merge([$id], $values)
-            );
+            $this->dal->updateService($id, $values);
             $serviceId = $id;
         } else {
-            $result = $this->callProcedureOne(
-                'CALL sesta_hizmet_ekle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                array_merge($values, [(int) ($this->currentUser()['id'] ?? 0)])
-            );
-            $serviceId = (int) ($result['hizmet_id'] ?? 0);
+            $serviceId = $this->dal->createService($values, (int) ($this->currentUser()['id'] ?? 0));
         }
 
         $this->saveServiceDeliverables($serviceId, $deliverables);
@@ -618,7 +549,7 @@ class AdminCode
 
     private function saveServiceDeliverables(int $serviceId, array $deliverables): void
     {
-        $this->callProcedureAll('CALL sesta_hizmet_teslimleri_temizle(?)', [$serviceId]);
+        $this->dal->clearServiceDeliverables($serviceId);
 
         foreach ($deliverables as $index => $item) {
             $title = clean_text($item['baslik'] ?? '');
@@ -627,28 +558,28 @@ class AdminCode
                 continue;
             }
 
-            $this->callProcedureAll('CALL sesta_hizmet_teslim_ekle(?, ?, ?, ?)', [$serviceId, $index + 1, $title, $description]);
+            $this->dal->createServiceDeliverable($serviceId, $index + 1, $title, $description);
         }
     }
 
     public function deleteService(int $id): void
     {
-        $this->callProcedureAll('CALL sesta_hizmet_sil(?)', [$id]);
+        $this->dal->deleteService($id);
     }
 
     public function getHeroSlides(): array
     {
-        return $this->callProcedureAll('CALL sesta_hero_hepsi()');
+        return $this->dal->getHeroSlides();
     }
 
     public function getHeroSlidesPage(int $page = 1, int $limit = 25): array
     {
-        return $this->callProcedurePage('CALL sesta_hero_sayfa(?, ?)', [$page, $limit], $page, $limit);
+        return $this->dal->getHeroSlidesPage($page, $limit);
     }
 
     public function getHeroSlide(int $id): ?array
     {
-        return $this->callProcedureOne('CALL sesta_hero_getir(?)', [$id]);
+        return $this->dal->getHeroSlideById($id);
     }
 
     public function saveHeroSlide(array $data, ?int $id = null): void
@@ -663,44 +594,36 @@ class AdminCode
         $values = array_map(fn ($field) => $data[$field] ?? null, $fields);
 
         if ($id) {
-            $this->callProcedureAll(
-                'CALL sesta_hero_guncelle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                array_merge([$id], $values)
-            );
+            $this->dal->updateHeroSlide($id, $values);
             return;
         }
 
-        $this->callProcedureAll(
-            'CALL sesta_hero_ekle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            array_merge($values, [(int) ($this->currentUser()['id'] ?? 0)])
-        );
+        $this->dal->createHeroSlide($values, (int) ($this->currentUser()['id'] ?? 0));
     }
 
     public function deleteHeroSlide(int $id): void
     {
-        $this->callProcedureAll('CALL sesta_hero_sil(?)', [$id]);
+        $this->dal->deleteHeroSlide($id);
     }
 
     public function getBlogPosts(): array
     {
-        return $this->callProcedureAll('CALL sesta_blog_hepsi()');
+        return $this->dal->getBlogPosts();
     }
 
     public function getBlogPostsPage(int $page = 1, int $limit = 25): array
     {
-        return $this->callProcedurePage('CALL sesta_blog_sayfa(?, ?)', [$page, $limit], $page, $limit);
+        return $this->dal->getBlogPostsPage($page, $limit);
     }
 
     public function getBlogPost(int $id): ?array
     {
-        return $this->callProcedureOne('CALL sesta_blog_getir(?)', [$id]);
+        return $this->dal->getBlogPostById($id);
     }
 
     public function blogSlugExists(string $slug, ?int $ignoreId = null): bool
     {
-        $result = $this->callProcedureOne('CALL sesta_blog_slug_var_mi(?, ?)', [$slug, $ignoreId]);
-
-        return (int) ($result['adet'] ?? 0) > 0;
+        return $this->dal->blogSlugExists($slug, $ignoreId);
     }
 
     public function saveBlogPost(array $data, ?int $id = null): void
@@ -715,37 +638,31 @@ class AdminCode
         $values = array_map(fn ($field) => $data[$field] ?? null, $fields);
 
         if ($id) {
-            $this->callProcedureAll(
-                'CALL sesta_blog_guncelle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                array_merge([$id], $values)
-            );
+            $this->dal->updateBlogPost($id, $values);
             return;
         }
 
-        $this->callProcedureAll(
-            'CALL sesta_blog_ekle(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            array_merge($values, [(int) ($this->currentUser()['id'] ?? 0)])
-        );
+        $this->dal->createBlogPost($values, (int) ($this->currentUser()['id'] ?? 0));
     }
 
     public function deleteBlogPost(int $id): void
     {
-        $this->callProcedureAll('CALL sesta_blog_sil(?)', [$id]);
+        $this->dal->deleteBlogPost($id);
     }
 
     public function getFaqs(): array
     {
-        return $this->callProcedureAll('CALL sesta_faq_hepsi()');
+        return $this->dal->getFaqs();
     }
 
     public function getFaqsPage(int $page = 1, int $limit = 25): array
     {
-        return $this->callProcedurePage('CALL sesta_faq_sayfa(?, ?)', [$page, $limit], $page, $limit);
+        return $this->dal->getFaqsPage($page, $limit);
     }
 
     public function getFaq(int $id): ?array
     {
-        return $this->callProcedureOne('CALL sesta_faq_getir(?)', [$id]);
+        return $this->dal->getFaqById($id);
     }
 
     public function saveFaq(array $data, ?int $id = null): void
@@ -757,56 +674,49 @@ class AdminCode
         $values = array_map(fn ($field) => $data[$field] ?? null, $fields);
 
         if ($id) {
-            $this->callProcedureAll('CALL sesta_faq_guncelle(?, ?, ?, ?, ?)', array_merge([$id], $values));
+            $this->dal->updateFaq($id, $values);
             return;
         }
 
-        $this->callProcedureAll('CALL sesta_faq_ekle(?, ?, ?, ?)', $values);
+        $this->dal->createFaq($values);
     }
 
     public function deleteFaq(int $id): void
     {
-        $this->callProcedureAll('CALL sesta_faq_sil(?)', [$id]);
+        $this->dal->deleteFaq($id);
     }
 
     public function getMediaItems(): array
     {
-        return $this->callProcedureAll('CALL sesta_medya_hepsi()');
+        return $this->dal->getMediaItems();
     }
 
     public function getMediaCategories(): array
     {
         return array_map(
             static fn (array $row): string => (string) $row['kategori'],
-            $this->callProcedureAll('CALL sesta_medya_kategorileri()')
+            $this->dal->getMediaCategories()
         );
     }
 
     public function getMediaItemsFiltered(?string $category = null): array
     {
-        return $this->callProcedureAll('CALL sesta_medya_filtreli(?)', [trim((string) $category)]);
+        return $this->dal->getFilteredMediaItems($category);
     }
 
     public function getMediaItemsFilteredPage(?string $category = null, int $page = 1, int $limit = 25): array
     {
-        return $this->callProcedurePage(
-            'CALL sesta_medya_filtreli_sayfa(?, ?, ?)',
-            [trim((string) $category), $page, $limit],
-            $page,
-            $limit
-        );
+        return $this->dal->getFilteredMediaItemsPage($category, $page, $limit);
     }
 
     public function getActiveMediaItemsByCategory(array $categories = []): array
     {
-        $normalized = array_values(array_filter(array_map('trim', $categories), static fn (string $value): bool => $value !== ''));
-
-        return $this->callProcedureAll('CALL sesta_medya_aktif_kategorilere_gore(?)', [implode(',', $normalized)]);
+        return $this->dal->getActiveMediaItemsByCategories($categories);
     }
 
     public function getMediaItem(int $id): ?array
     {
-        return $this->callProcedureOne('CALL sesta_medya_getir(?)', [$id]);
+        return $this->dal->getMediaItemById($id);
     }
 
     public function saveMediaItem(array $data, ?int $id = null): void
@@ -818,19 +728,16 @@ class AdminCode
         $values = array_map(fn ($field) => $data[$field] ?? null, $fields);
 
         if ($id) {
-            $this->callProcedureAll('CALL sesta_medya_guncelle(?, ?, ?, ?, ?, ?)', array_merge([$id], $values));
+            $this->dal->updateMediaItem($id, $values);
             return;
         }
 
-        $this->callProcedureAll(
-            'CALL sesta_medya_ekle(?, ?, ?, ?, ?, ?)',
-            array_merge($values, [(int) ($this->currentUser()['id'] ?? 0)])
-        );
+        $this->dal->createMediaItem($values, (int) ($this->currentUser()['id'] ?? 0));
     }
 
     public function deleteMediaItem(int $id): void
     {
-        $this->callProcedureAll('CALL sesta_medya_sil(?)', [$id]);
+        $this->dal->deleteMediaItem($id);
     }
 
     public function getContactRequests(): array
@@ -838,7 +745,7 @@ class AdminCode
         $items = [];
 
         try {
-            $items = $this->callProcedureAll('CALL sesta_talepler_hepsi()');
+            $items = $this->dal->getContactRequests();
         } catch (Throwable $exception) {
             $items = [];
         }
@@ -868,7 +775,7 @@ class AdminCode
         }
 
         try {
-            return $this->callProcedureOne('CALL sesta_talep_getir(?)', [$id]);
+            return $this->dal->getContactRequestById($id);
         } catch (Throwable $exception) {
             return null;
         }
@@ -890,7 +797,7 @@ class AdminCode
         }
 
         try {
-            $this->callProcedureAll('CALL sesta_talep_guncelle(?, ?, ?)', [$id, $okundu, $adminNotu]);
+            $this->dal->updateContactRequest($id, $okundu, $adminNotu);
         } catch (Throwable $exception) {
             throw new RuntimeException('Talep guncellenemedi.', 0, $exception);
         }
@@ -908,7 +815,7 @@ class AdminCode
         }
 
         try {
-            $this->callProcedureAll('CALL sesta_talep_sil(?)', [$id]);
+            $this->dal->deleteContactRequest($id);
         } catch (Throwable $exception) {
             throw new RuntimeException('Talep silinemedi.', 0, $exception);
         }
@@ -920,7 +827,7 @@ class AdminCode
         $payload = array_values($record);
 
         try {
-            $this->callProcedureAll('CALL sesta_talep_ekle(?, ?, ?, ?, ?, ?, ?, ?, ?)', $payload);
+            $this->dal->createContactRequest($payload);
             return;
         } catch (Throwable $exception) {
             $items = $this->getFallbackContactRequests();
