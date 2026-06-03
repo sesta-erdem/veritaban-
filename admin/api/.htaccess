@@ -1,0 +1,5 @@
+Options -Indexes
+
+<FilesMatch "^(?!contact-submit\.php$|get-blog\.php$|get-projects\.php$|get-services\.php$|admin-user\.php$).+\.php$">
+    Require all denied
+</FilesMatch>

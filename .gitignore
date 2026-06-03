@@ -1,0 +1,4 @@
+.DS_Store
+.cache/
+.ftp-deploy-sync-state.json
+admin/tmp/

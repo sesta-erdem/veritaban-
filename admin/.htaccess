@@ -1,0 +1,36 @@
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^(?:include|pages|sistem|tmp|migrations)(?:/|$) - [F,L,NC]
+</IfModule>
+
+<IfModule mod_authz_core.c>
+  <FilesMatch "^(?:README\.md|database\.sql|export-static\.php)$|\.(?:sql|dump|bak|old|log|zip|rar|7z|tar|gz|env|ini|ya?ml)$">
+    Require all denied
+  </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+  <FilesMatch "^(?:README\.md|database\.sql|export-static\.php)$|\.(?:sql|dump|bak|old|log|zip|rar|7z|tar|gz|env|ini|ya?ml)$">
+    Order allow,deny
+    Deny from all
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_setenvif.c>
+  # Admin PHP/HTML pages must not be stored by browser or proxy caches.
+  SetEnvIfNoCase Request_URI "^.*\.php(?:$|\?)" admin_dynamic_no_store=1
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "same-origin"
+  Header always set Cross-Origin-Resource-Policy "same-site"
+  Header always set Origin-Agent-Cluster "?1"
+  Header always set Permissions-Policy "accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+  Header always set X-Permitted-Cross-Domain-Policies "none"
+  Header always set Cache-Control "private, no-store, no-cache, must-revalidate, max-age=0" env=admin_dynamic_no_store
+  Header always set Pragma "no-cache" env=admin_dynamic_no_store
+  Header always set Expires "0" env=admin_dynamic_no_store
+</IfModule>

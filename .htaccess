@@ -1,0 +1,94 @@
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Block access to dot-prefixed paths (hidden files/directories) except /.well-known/.
+  # This prevents accidental exposure of build artefacts like `.dist-stale-*` directories.
+  RewriteCond %{REQUEST_URI} !^/\.well-known(?:/|$) [NC]
+  RewriteRule (^|/)\. - [F,L,NC]
+
+  # [PRODUCTION] HTTPS Zorlaması (Aktif etmek için alttaki iki satırı açın)
+  RewriteCond %{HTTPS} off
+  RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+  RewriteRule ^(?:src|scripts|node_modules|dist|vendor|\.astro|\.cache|admin/tmp)(?:/|$) - [F,L,NC]
+</IfModule>
+
+<IfModule mod_env.c>
+  # [PRODUCTION] Ortam Değişkenleri
+  SetEnv SESTA_ALLOWED_ORIGINS "https://dolunaymuhendislik.com"
+  SetEnv SESTA_PUBLIC_SITE_URL "https://dolunaymuhendislik.com"
+  SetEnv SESTA_FORCE_SECURE_SESSION "1"
+  SetEnv SESTA_APP_DEBUG "0"
+  SetEnv SESTA_DB_NAME "CHANGE_ME"
+  SetEnv SESTA_DB_USER "CHANGE_ME"
+  SetEnv SESTA_DB_PASS "CHANGE_ME"
+</IfModule>
+
+SetEnv SESTA_GITHUB_TOKEN ""
+
+
+<IfModule mod_authz_core.c>
+  <FilesMatch "(^\.|\.md$|\.sql$|\.dump$|\.bak$|\.old$|\.log$|\.env$|\.ini$|\.zip$|\.rar$|\.7z$|\.tar$|\.gz$|\.lock$|\.ya?ml$|^package(?:-lock)?\.json$|^tsconfig\.json$|^astro\.config\.mjs$)">
+    Require all denied
+  </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+  <FilesMatch "(^\.|\.md$|\.sql$|\.dump$|\.bak$|\.old$|\.log$|\.env$|\.ini$|\.zip$|\.rar$|\.7z$|\.tar$|\.gz$|\.lock$|\.ya?ml$|^package(?:-lock)?\.json$|^tsconfig\.json$|^astro\.config\.mjs$)">
+    Order allow,deny
+    Deny from all
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/plain text/html text/css text/javascript application/javascript application/json application/xml image/svg+xml font/woff font/woff2
+</IfModule>
+
+<IfModule mod_expires.c>
+  ExpiresActive On
+
+  # Hashed Astro assets can be cached aggressively.
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType application/javascript "access plus 1 year"
+  ExpiresByType text/javascript "access plus 1 year"
+  ExpiresByType font/woff "access plus 1 year"
+  ExpiresByType font/woff2 "access plus 1 year"
+
+  # Public images and uploads use generated filenames; a moderate long cache is safe.
+  ExpiresByType image/jpeg "access plus 30 days"
+  ExpiresByType image/png "access plus 30 days"
+  ExpiresByType image/webp "access plus 30 days"
+  ExpiresByType image/gif "access plus 30 days"
+  ExpiresByType image/svg+xml "access plus 30 days"
+</IfModule>
+
+<IfModule mod_setenvif.c>
+  # Avoid overriding stricter admin headers (admin sets its own CSP, Referrer-Policy, X-Frame-Options, etc.).
+  SetEnvIfNoCase Request_URI "^/admin(?:/|$)" sesta_is_admin=1
+
+  # Astro/Vite build assets are content-hashed.
+  SetEnvIfNoCase Request_URI "(?:^|/)(?:_astro|dist/_astro)/" static_immutable=1
+
+  # Public images and generated upload filenames may be cached, but not forever.
+  SetEnvIfNoCase Request_URI "(?:^|/)(?:images|uploads|public/uploads|dist/uploads)/" public_media_cache=1
+
+  # Static HTML should revalidate so content updates are seen quickly.
+  SetEnvIfNoCase Request_URI "\.html?$" public_html_cache=1
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin" env=!sesta_is_admin
+  Header always set X-Frame-Options "SAMEORIGIN" env=!sesta_is_admin
+  Header always set Cross-Origin-Resource-Policy "same-site"
+  Header always set Origin-Agent-Cluster "?1"
+  Header always set Permissions-Policy "accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+  Header always set X-Permitted-Cross-Domain-Policies "none"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self'; frame-src 'self' https://www.google.com; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'" env=!sesta_is_admin
+
+  Header set Cache-Control "public, max-age=31536000, immutable" env=static_immutable
+  Header set Cache-Control "public, max-age=2592000" env=public_media_cache
+  Header set Cache-Control "public, max-age=300, must-revalidate" env=public_html_cache
+</IfModule>
